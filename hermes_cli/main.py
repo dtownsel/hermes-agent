@@ -11149,6 +11149,16 @@ Examples:
         help="Path to a file containing a bearer token. Required for http "
              "transport when binding to non-loopback. File should be chmod 0600.",
     )
+    mcp_serve_p.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        dest="allowed_hosts",
+        help="Add a hostname to the Host-header allowlist (repeatable). "
+             "Required when running behind a reverse proxy (e.g. Tailscale "
+             "Funnel) that rewrites Host. Example: "
+             "--allowed-host dillons-mac-mini.tailfd2570.ts.net:10000",
+    )
     _add_accept_hooks_flag(mcp_serve_p)
 
     mcp_add_p = mcp_sub.add_parser(
