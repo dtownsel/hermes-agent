@@ -763,6 +763,7 @@ def mcp_command(args):
             oauth_signing_key_file=getattr(args, "oauth_signing_key_file", None),
             oauth_state_file=getattr(args, "oauth_state_file", None),
             oauth_public_origin=getattr(args, "oauth_public_origin", None),
+            oauth_audience=getattr(args, "oauth_audience", "hermes-mcp"),
         )
         return
 

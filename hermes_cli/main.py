@@ -11187,6 +11187,12 @@ Examples:
              "OAuth client (e.g. claude.ai) connects with. "
              "Example: https://dillons-mac-mini.tailfd2570.ts.net:10000",
     )
+    mcp_serve_p.add_argument(
+        "--oauth-audience",
+        default="hermes-mcp",
+        help="Expected JWT audience for OAuth bearer tokens. Defaults to "
+             "hermes-mcp. Use reid-v7 when trusting Reid's root OAuth issuer.",
+    )
     _add_accept_hooks_flag(mcp_serve_p)
 
     mcp_add_p = mcp_sub.add_parser(
