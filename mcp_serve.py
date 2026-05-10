@@ -863,8 +863,104 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run_mcp_server(verbose: bool = False) -> None:
-    """Start the Hermes MCP server on stdio."""
+def _load_bearer_token(token_file: Optional[str]) -> Optional[str]:
+    """Read a bearer token from a file. Returns None when no file given.
+
+    File mode is enforced to 0600; a warning is logged if looser. Trailing
+    whitespace is stripped. Empty/blank tokens are rejected.
+    """
+    if not token_file:
+        return None
+    path = Path(token_file).expanduser()
+    if not path.exists():
+        print(f"Error: auth token file not found: {path}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        mode = path.stat().st_mode & 0o777
+        if mode & 0o077:
+            logger.warning(
+                "auth token file %s has loose permissions (mode %o); recommend 0600",
+                path,
+                mode,
+            )
+    except OSError:
+        pass
+    token = path.read_text(encoding="utf-8").strip()
+    if not token:
+        print(f"Error: auth token file {path} is empty", file=sys.stderr)
+        sys.exit(2)
+    return token
+
+
+def _build_http_app(server, bearer_token: Optional[str]):
+    """Wrap FastMCP's streamable_http_app() with optional bearer auth + /health.
+
+    FastMCP's streamable_http_app() returns a Starlette app exposing a single
+    /mcp route. We attach a /health route and (optionally) a bearer-auth
+    middleware to that same app, keeping a single Starlette router so the
+    /mcp path resolves cleanly without a Mount-redirect collision.
+
+    When ``bearer_token`` is provided, all requests except GET /health must
+    present ``Authorization: Bearer <token>``. When None, the app is served
+    open — only acceptable on a fully trusted loopback bind.
+    """
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    app = server.streamable_http_app()
+
+    async def health(_request):
+        return JSONResponse({"ok": True, "service": "hermes-mcp"})
+
+    # Append /health to the existing router so we don't disturb /mcp routing.
+    app.router.routes.append(Route("/health", health, methods=["GET"]))
+
+    class BearerAuthMiddleware(BaseHTTPMiddleware):
+        def __init__(self, app, token: str):
+            super().__init__(app)
+            self._token = token
+
+        async def dispatch(self, request, call_next):
+            if request.url.path == "/health":
+                return await call_next(request)
+            header = request.headers.get("authorization", "")
+            if not header.lower().startswith("bearer "):
+                return JSONResponse(
+                    {"error": "missing_bearer_token"}, status_code=401
+                )
+            presented = header.split(" ", 1)[1].strip()
+            import hmac as _hmac
+            if not _hmac.compare_digest(presented, self._token):
+                return JSONResponse(
+                    {"error": "invalid_bearer_token"}, status_code=401
+                )
+            return await call_next(request)
+
+    if bearer_token:
+        app.add_middleware(BearerAuthMiddleware, token=bearer_token)
+    return app
+
+
+def run_mcp_server(
+    verbose: bool = False,
+    transport: str = "stdio",
+    host: str = "127.0.0.1",
+    port: int = 9090,
+    auth_token_file: Optional[str] = None,
+) -> None:
+    """Start the Hermes MCP server.
+
+    Args:
+        verbose: enable DEBUG-level logging on stderr.
+        transport: "stdio" (default, MCP-over-stdin/stdout) or "http"
+            (streamable-HTTP per the MCP spec).
+        host: bind address for HTTP transport. Defaults to loopback.
+        port: TCP port for HTTP transport.
+        auth_token_file: path to a file containing a bearer token; required
+            for HTTP transport unless the bind is strictly loopback AND the
+            caller explicitly opts in (we still recommend a token).
+    """
     if not _MCP_SERVER_AVAILABLE:
         print(
             "Error: MCP server requires the 'mcp' package.\n"
@@ -885,13 +981,69 @@ def run_mcp_server(verbose: bool = False) -> None:
 
     import asyncio
 
-    async def _run():
-        try:
-            await server.run_stdio_async()
-        finally:
-            bridge.stop()
+    if transport == "stdio":
+        async def _run_stdio():
+            try:
+                await server.run_stdio_async()
+            finally:
+                bridge.stop()
 
-    try:
-        asyncio.run(_run())
-    except KeyboardInterrupt:
-        bridge.stop()
+        try:
+            asyncio.run(_run_stdio())
+        except KeyboardInterrupt:
+            bridge.stop()
+        return
+
+    if transport == "http":
+        token = _load_bearer_token(auth_token_file)
+        is_loopback = host in ("127.0.0.1", "::1", "localhost")
+        if token is None and not is_loopback:
+            print(
+                f"Error: --auth-token-file is required when binding to {host} "
+                "(non-loopback). Refusing to start an open MCP server on a "
+                "routable interface.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if token is None:
+            logger.warning(
+                "Starting HTTP MCP on %s:%d WITHOUT auth (loopback only). "
+                "Provide --auth-token-file for production use.",
+                host,
+                port,
+            )
+
+        try:
+            import uvicorn
+        except ImportError:
+            print(
+                "Error: HTTP transport requires uvicorn.\n"
+                f"Install with: {sys.executable} -m pip install uvicorn",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        app = _build_http_app(server, token)
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level="debug" if verbose else "info",
+            access_log=verbose,
+        )
+        uv_server = uvicorn.Server(config)
+
+        async def _run_http():
+            try:
+                await uv_server.serve()
+            finally:
+                bridge.stop()
+
+        try:
+            asyncio.run(_run_http())
+        except KeyboardInterrupt:
+            bridge.stop()
+        return
+
+    print(f"Error: unknown transport {transport!r} (expected stdio|http)", file=sys.stderr)
+    sys.exit(2)
