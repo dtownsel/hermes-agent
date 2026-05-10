@@ -447,22 +447,45 @@ class EventBridge:
 # MCP Server
 # ---------------------------------------------------------------------------
 
-def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
-    """Create and return the Hermes MCP server with all tools registered."""
+def create_mcp_server(
+    event_bridge: Optional[EventBridge] = None,
+    extra_allowed_hosts: Optional[List[str]] = None,
+) -> "FastMCP":
+    """Create and return the Hermes MCP server with all tools registered.
+
+    ``extra_allowed_hosts`` adds entries to FastMCP's DNS-rebinding host
+    allowlist. The default allowlist is loopback only — for HTTP transport
+    behind a reverse proxy (e.g. Tailscale Funnel rewriting Host), the
+    proxy's public hostname must be listed here or FastMCP returns 421.
+    """
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(
             "MCP server requires the 'mcp' package. "
             f"Install with: {sys.executable} -m pip install 'mcp'"
         )
 
-    mcp = FastMCP(
-        "hermes",
-        instructions=(
+    fastmcp_kwargs: Dict[str, object] = {
+        "instructions": (
             "Hermes Agent messaging bridge. Use these tools to interact with "
             "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
             "Matrix, and other connected platforms."
         ),
-    )
+    }
+    if extra_allowed_hosts:
+        from mcp.server.transport_security import TransportSecuritySettings
+        fastmcp_kwargs["transport_security"] = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[
+                "127.0.0.1:*", "localhost:*", "[::1]:*",
+                *extra_allowed_hosts,
+            ],
+            allowed_origins=[
+                "http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*",
+                *(f"https://{h}" for h in extra_allowed_hosts),
+            ],
+        )
+
+    mcp = FastMCP("hermes", **fastmcp_kwargs)
 
     bridge = event_bridge or EventBridge()
 
@@ -948,6 +971,7 @@ def run_mcp_server(
     host: str = "127.0.0.1",
     port: int = 9090,
     auth_token_file: Optional[str] = None,
+    allowed_hosts: Optional[List[str]] = None,
 ) -> None:
     """Start the Hermes MCP server.
 
@@ -960,6 +984,9 @@ def run_mcp_server(
         auth_token_file: path to a file containing a bearer token; required
             for HTTP transport unless the bind is strictly loopback AND the
             caller explicitly opts in (we still recommend a token).
+        allowed_hosts: extra hostnames to add to FastMCP's Host-header
+            allowlist (needed when behind a reverse proxy like Tailscale
+            Funnel that rewrites Host to the public hostname).
     """
     if not _MCP_SERVER_AVAILABLE:
         print(
@@ -977,7 +1004,10 @@ def run_mcp_server(
     bridge = EventBridge()
     bridge.start()
 
-    server = create_mcp_server(event_bridge=bridge)
+    server = create_mcp_server(
+        event_bridge=bridge,
+        extra_allowed_hosts=allowed_hosts,
+    )
 
     import asyncio
 
