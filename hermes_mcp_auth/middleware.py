@@ -49,10 +49,11 @@ class OAuthBearerMiddleware(BaseHTTPMiddleware):
     discovery metadata in the 401 response.
     """
 
-    def __init__(self, app, *, signing_key: str, issuer: str):
+    def __init__(self, app, *, signing_key: str, issuer: str, audience: str = "hermes-mcp"):
         super().__init__(app)
         self._signing_key = signing_key
         self._issuer = issuer
+        self._audience = audience
         self._www_authenticate = (
             f'Bearer resource_metadata="{issuer}/.well-known/oauth-protected-resource/mcp", '
             f'error="invalid_token"'
@@ -80,6 +81,7 @@ class OAuthBearerMiddleware(BaseHTTPMiddleware):
                 token=token,
                 signing_key=self._signing_key,
                 issuer=self._issuer,
+                audience=self._audience,
             )
         except jwt.ExpiredSignatureError:
             log.info("reject /mcp request: expired token")

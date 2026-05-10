@@ -105,13 +105,20 @@ def validate_access_token(
     token: str,
     signing_key: str,
     issuer: str,
+    audience: str = AUDIENCE,
 ) -> ValidatedToken:
-    """Raises ``jwt.InvalidTokenError`` subclasses on failure."""
+    """Raises ``jwt.InvalidTokenError`` subclasses on failure.
+
+    ``audience`` defaults to Hermes's native ``hermes-mcp`` audience, but is
+    configurable so Hermes can also act as a resource server behind another
+    trusted local authorization server (currently Reid's root OAuth issuer,
+    which emits ``aud=reid-v7``).
+    """
     payload = jwt.decode(
         token,
         signing_key,
         algorithms=[ALGORITHM],
-        audience=AUDIENCE,
+        audience=audience,
         issuer=issuer,
         options={"require": ["exp", "iat", "iss", "aud", "sub"]},
     )

@@ -923,6 +923,7 @@ def _build_http_app(
     oauth_signing_key: Optional[str] = None,
     oauth_store_path: Optional[Path] = None,
     oauth_public_origin: Optional[str] = None,
+    oauth_audience: str = "hermes-mcp",
 ):
     """Wrap FastMCP's streamable_http_app() with auth + /health.
 
@@ -985,6 +986,7 @@ def _build_http_app(
             OAuthBearerMiddleware,
             signing_key=oauth_signing_key,
             issuer=oauth_public_origin.rstrip("/"),
+            audience=oauth_audience,
         )
         return app
 
@@ -1032,6 +1034,7 @@ def run_mcp_server(
     oauth_signing_key_file: Optional[str] = None,
     oauth_state_file: Optional[str] = None,
     oauth_public_origin: Optional[str] = None,
+    oauth_audience: str = "hermes-mcp",
 ) -> None:
     """Start the Hermes MCP server.
 
@@ -1053,6 +1056,8 @@ def run_mcp_server(
         oauth_public_origin: externally-visible base URL (no trailing /mcp).
             Becomes the OAuth ``issuer`` and is advertised in RFC 8414
             metadata. MUST match the URL the OAuth client connects with.
+        oauth_audience: expected JWT ``aud`` claim. Defaults to ``hermes-mcp``;
+            set to ``reid-v7`` when trusting Reid's root OAuth issuer.
     """
     if not _MCP_SERVER_AVAILABLE:
         print(
@@ -1170,6 +1175,7 @@ def run_mcp_server(
         oauth_signing_key=oauth_signing_key,
         oauth_store_path=oauth_store_path,
         oauth_public_origin=oauth_public_origin,
+        oauth_audience=oauth_audience,
     )
     config = uvicorn.Config(
         app,
