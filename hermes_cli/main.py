@@ -14723,6 +14723,34 @@ Examples:
              "Funnel) that rewrites Host. Example: "
              "--allowed-host dillons-mac-mini.tailfd2570.ts.net:10000",
     )
+    mcp_serve_p.add_argument(
+        "--auth-mode",
+        choices=["auto", "none", "bearer", "oauth"],
+        default="auto",
+        help="Auth model for http transport. auto picks oauth if "
+             "--oauth-signing-key-file is set, else bearer if "
+             "--auth-token-file is set, else none.",
+    )
+    mcp_serve_p.add_argument(
+        "--oauth-signing-key-file",
+        default=None,
+        help="Path to HS256 signing key file (auto-created on first run). "
+             "Required for --auth-mode oauth.",
+    )
+    mcp_serve_p.add_argument(
+        "--oauth-state-file",
+        default=None,
+        help="Path to OAuth state JSON file (clients, codes, refresh tokens). "
+             "Defaults to ~/.config/hermes-mcp/oauth-state.json.",
+    )
+    mcp_serve_p.add_argument(
+        "--oauth-public-origin",
+        default=None,
+        help="Externally-visible base URL (no trailing /mcp). Becomes the "
+             "OAuth issuer in RFC 8414 metadata. MUST match the URL the "
+             "OAuth client (e.g. claude.ai) connects with. "
+             "Example: https://dillons-mac-mini.tailfd2570.ts.net:10000",
+    )
     _add_accept_hooks_flag(mcp_serve_p)
 
     mcp_add_p = mcp_sub.add_parser(
