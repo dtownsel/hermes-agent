@@ -14690,6 +14690,29 @@ Examples:
         action="store_true",
         help="Enable verbose logging on stderr",
     )
+    mcp_serve_p.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport: stdio (default) or http (streamable-HTTP per MCP spec)",
+    )
+    mcp_serve_p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address for --transport http (default: 127.0.0.1)",
+    )
+    mcp_serve_p.add_argument(
+        "--port",
+        type=int,
+        default=9090,
+        help="TCP port for --transport http (default: 9090)",
+    )
+    mcp_serve_p.add_argument(
+        "--auth-token-file",
+        default=None,
+        help="Path to a file containing a bearer token. Required for http "
+             "transport when binding to non-loopback. File should be chmod 0600.",
+    )
     _add_accept_hooks_flag(mcp_serve_p)
 
     mcp_add_p = mcp_sub.add_parser(
