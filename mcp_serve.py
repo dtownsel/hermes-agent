@@ -915,17 +915,28 @@ def _load_bearer_token(token_file: Optional[str]) -> Optional[str]:
     return token
 
 
-def _build_http_app(server, bearer_token: Optional[str]):
-    """Wrap FastMCP's streamable_http_app() with optional bearer auth + /health.
+def _build_http_app(
+    server,
+    *,
+    auth_mode: str,
+    bearer_token: Optional[str],
+    oauth_signing_key: Optional[str] = None,
+    oauth_store_path: Optional[Path] = None,
+    oauth_public_origin: Optional[str] = None,
+):
+    """Wrap FastMCP's streamable_http_app() with auth + /health.
 
     FastMCP's streamable_http_app() returns a Starlette app exposing a single
-    /mcp route. We attach a /health route and (optionally) a bearer-auth
-    middleware to that same app, keeping a single Starlette router so the
-    /mcp path resolves cleanly without a Mount-redirect collision.
+    /mcp route. We attach a /health route plus auth depending on ``auth_mode``:
 
-    When ``bearer_token`` is provided, all requests except GET /health must
-    present ``Authorization: Bearer <token>``. When None, the app is served
-    open — only acceptable on a fully trusted loopback bind.
+    - ``none``: open server (loopback only).
+    - ``bearer``: static-bearer middleware comparing against a file-loaded
+      token. Suitable for desktop MCP clients that let you set headers.
+    - ``oauth``: full OAuth 2.1 + PKCE with file-backed state at
+      ``oauth_store_path`` and HS256 signing key ``oauth_signing_key``. The
+      ``oauth_public_origin`` URL becomes the issuer and is advertised in
+      RFC 8414 metadata; it MUST match the externally-visible base URL the
+      OAuth client (e.g. claude.ai) is configured with.
     """
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
@@ -934,35 +945,80 @@ def _build_http_app(server, bearer_token: Optional[str]):
     app = server.streamable_http_app()
 
     async def health(_request):
-        return JSONResponse({"ok": True, "service": "hermes-mcp"})
+        return JSONResponse({"ok": True, "service": "hermes-mcp", "auth_mode": auth_mode})
 
-    # Append /health to the existing router so we don't disturb /mcp routing.
     app.router.routes.append(Route("/health", health, methods=["GET"]))
 
-    class BearerAuthMiddleware(BaseHTTPMiddleware):
-        def __init__(self, app, token: str):
-            super().__init__(app)
-            self._token = token
+    if auth_mode == "oauth":
+        if not (oauth_signing_key and oauth_store_path and oauth_public_origin):
+            raise ValueError(
+                "auth_mode='oauth' requires oauth_signing_key, oauth_store_path, oauth_public_origin"
+            )
+        from hermes_mcp_auth.endpoints import configure_auth_router, oauth_routes
+        from hermes_mcp_auth.middleware import OAuthBearerMiddleware
+        from hermes_mcp_auth.store import OAuthStore
 
-        async def dispatch(self, request, call_next):
-            if request.url.path == "/health":
+        store = OAuthStore(Path(oauth_store_path))
+        configure_auth_router(
+            store=store,
+            signing_key=oauth_signing_key,
+            issuer=oauth_public_origin.rstrip("/"),
+        )
+        # Append the OAuth routes onto FastMCP's Starlette router. Routes
+        # are pure Starlette (no FastAPI middleware-stack dependency).
+        app.router.routes.extend(oauth_routes)
+
+        # CORS for claude.ai's in-browser PKCE token exchange. Without this,
+        # the OPTIONS preflight on /oauth/token returns 405 and the exchange
+        # silently fails. Listed first so it wraps outermost — preflights
+        # short-circuit before hitting the bearer guard.
+        from starlette.middleware.cors import CORSMiddleware
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["https://claude.ai"],
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["*"],
+            max_age=600,
+        )
+        app.add_middleware(
+            OAuthBearerMiddleware,
+            signing_key=oauth_signing_key,
+            issuer=oauth_public_origin.rstrip("/"),
+        )
+        return app
+
+    if auth_mode == "bearer":
+        class StaticBearerMiddleware(BaseHTTPMiddleware):
+            def __init__(self, app, token: str):
+                super().__init__(app)
+                self._token = token
+
+            async def dispatch(self, request, call_next):
+                if request.url.path == "/health":
+                    return await call_next(request)
+                header = request.headers.get("authorization", "")
+                if not header.lower().startswith("bearer "):
+                    return JSONResponse(
+                        {"error": "missing_bearer_token"}, status_code=401
+                    )
+                presented = header.split(" ", 1)[1].strip()
+                import hmac as _hmac
+                if not _hmac.compare_digest(presented, self._token):
+                    return JSONResponse(
+                        {"error": "invalid_bearer_token"}, status_code=401
+                    )
                 return await call_next(request)
-            header = request.headers.get("authorization", "")
-            if not header.lower().startswith("bearer "):
-                return JSONResponse(
-                    {"error": "missing_bearer_token"}, status_code=401
-                )
-            presented = header.split(" ", 1)[1].strip()
-            import hmac as _hmac
-            if not _hmac.compare_digest(presented, self._token):
-                return JSONResponse(
-                    {"error": "invalid_bearer_token"}, status_code=401
-                )
-            return await call_next(request)
 
-    if bearer_token:
-        app.add_middleware(BearerAuthMiddleware, token=bearer_token)
-    return app
+        if not bearer_token:
+            raise ValueError("auth_mode='bearer' requires bearer_token")
+        app.add_middleware(StaticBearerMiddleware, token=bearer_token)
+        return app
+
+    if auth_mode == "none":
+        return app
+
+    raise ValueError(f"unknown auth_mode {auth_mode!r} (expected none|bearer|oauth)")
 
 
 def run_mcp_server(
@@ -972,21 +1028,31 @@ def run_mcp_server(
     port: int = 9090,
     auth_token_file: Optional[str] = None,
     allowed_hosts: Optional[List[str]] = None,
+    auth_mode: str = "auto",
+    oauth_signing_key_file: Optional[str] = None,
+    oauth_state_file: Optional[str] = None,
+    oauth_public_origin: Optional[str] = None,
 ) -> None:
     """Start the Hermes MCP server.
 
     Args:
         verbose: enable DEBUG-level logging on stderr.
-        transport: "stdio" (default, MCP-over-stdin/stdout) or "http"
-            (streamable-HTTP per the MCP spec).
-        host: bind address for HTTP transport. Defaults to loopback.
+        transport: "stdio" (default) or "http" (streamable-HTTP).
+        host: bind address for HTTP transport.
         port: TCP port for HTTP transport.
-        auth_token_file: path to a file containing a bearer token; required
-            for HTTP transport unless the bind is strictly loopback AND the
-            caller explicitly opts in (we still recommend a token).
-        allowed_hosts: extra hostnames to add to FastMCP's Host-header
-            allowlist (needed when behind a reverse proxy like Tailscale
-            Funnel that rewrites Host to the public hostname).
+        auth_token_file: file containing a static bearer token (legacy mode).
+        allowed_hosts: extra hostnames for FastMCP's Host-header allowlist
+            (required behind a reverse proxy that rewrites Host).
+        auth_mode: ``auto`` (pick from other args), ``none``, ``bearer``,
+            or ``oauth``. ``auto`` resolves to ``oauth`` if oauth_signing_key_file
+            is set, else ``bearer`` if auth_token_file is set, else ``none``.
+        oauth_signing_key_file: path to HS256 signing key file (auto-created
+            on first run if missing). Required for ``oauth`` mode.
+        oauth_state_file: path to JSON state file (clients, codes, refresh
+            tokens). Defaults to ``~/.config/hermes-mcp/oauth-state.json``.
+        oauth_public_origin: externally-visible base URL (no trailing /mcp).
+            Becomes the OAuth ``issuer`` and is advertised in RFC 8414
+            metadata. MUST match the URL the OAuth client connects with.
     """
     if not _MCP_SERVER_AVAILABLE:
         print(
@@ -1024,56 +1090,108 @@ def run_mcp_server(
             bridge.stop()
         return
 
-    if transport == "http":
-        token = _load_bearer_token(auth_token_file)
-        is_loopback = host in ("127.0.0.1", "::1", "localhost")
-        if token is None and not is_loopback:
+    if transport != "http":
+        print(f"Error: unknown transport {transport!r} (expected stdio|http)", file=sys.stderr)
+        sys.exit(2)
+
+    # ---- HTTP transport ----
+
+    # Resolve auth_mode='auto'.
+    resolved_auth_mode = auth_mode
+    if resolved_auth_mode == "auto":
+        if oauth_signing_key_file:
+            resolved_auth_mode = "oauth"
+        elif auth_token_file:
+            resolved_auth_mode = "bearer"
+        else:
+            resolved_auth_mode = "none"
+
+    is_loopback = host in ("127.0.0.1", "::1", "localhost")
+    if resolved_auth_mode == "none" and not is_loopback:
+        print(
+            f"Error: auth_mode='none' refused when binding to {host} (non-loopback). "
+            "Use --auth-mode bearer or --auth-mode oauth.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if resolved_auth_mode == "none":
+        logger.warning(
+            "Starting HTTP MCP on %s:%d WITHOUT auth (loopback only).",
+            host, port,
+        )
+
+    static_token: Optional[str] = None
+    oauth_signing_key: Optional[str] = None
+    oauth_store_path: Optional[Path] = None
+
+    if resolved_auth_mode == "bearer":
+        static_token = _load_bearer_token(auth_token_file)
+        if not static_token:
             print(
-                f"Error: --auth-token-file is required when binding to {host} "
-                "(non-loopback). Refusing to start an open MCP server on a "
-                "routable interface.",
+                "Error: auth_mode='bearer' requires --auth-token-file pointing at a token file.",
                 file=sys.stderr,
             )
             sys.exit(2)
-        if token is None:
-            logger.warning(
-                "Starting HTTP MCP on %s:%d WITHOUT auth (loopback only). "
-                "Provide --auth-token-file for production use.",
-                host,
-                port,
-            )
 
-        try:
-            import uvicorn
-        except ImportError:
+    if resolved_auth_mode == "oauth":
+        if not oauth_signing_key_file:
             print(
-                "Error: HTTP transport requires uvicorn.\n"
-                f"Install with: {sys.executable} -m pip install uvicorn",
+                "Error: auth_mode='oauth' requires --oauth-signing-key-file.",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            sys.exit(2)
+        if not oauth_public_origin:
+            print(
+                "Error: auth_mode='oauth' requires --oauth-public-origin "
+                "(e.g. https://your.tailnet.ts.net:10000).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        from hermes_mcp_auth.jwt_tokens import load_signing_key
+        oauth_signing_key = load_signing_key(Path(oauth_signing_key_file).expanduser())
+        oauth_store_path = Path(
+            oauth_state_file or "~/.config/hermes-mcp/oauth-state.json"
+        ).expanduser()
 
-        app = _build_http_app(server, token)
-        config = uvicorn.Config(
-            app,
-            host=host,
-            port=port,
-            log_level="debug" if verbose else "info",
-            access_log=verbose,
+    try:
+        import uvicorn
+    except ImportError:
+        print(
+            "Error: HTTP transport requires uvicorn.\n"
+            f"Install with: {sys.executable} -m pip install uvicorn",
+            file=sys.stderr,
         )
-        uv_server = uvicorn.Server(config)
+        sys.exit(1)
 
-        async def _run_http():
-            try:
-                await uv_server.serve()
-            finally:
-                bridge.stop()
+    app = _build_http_app(
+        server,
+        auth_mode=resolved_auth_mode,
+        bearer_token=static_token,
+        oauth_signing_key=oauth_signing_key,
+        oauth_store_path=oauth_store_path,
+        oauth_public_origin=oauth_public_origin,
+    )
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level="debug" if verbose else "info",
+        access_log=verbose,
+    )
+    uv_server = uvicorn.Server(config)
 
+    logger.info(
+        "hermes mcp http server starting host=%s port=%d auth_mode=%s",
+        host, port, resolved_auth_mode,
+    )
+
+    async def _run_http():
         try:
-            asyncio.run(_run_http())
-        except KeyboardInterrupt:
+            await uv_server.serve()
+        finally:
             bridge.stop()
-        return
 
-    print(f"Error: unknown transport {transport!r} (expected stdio|http)", file=sys.stderr)
-    sys.exit(2)
+    try:
+        asyncio.run(_run_http())
+    except KeyboardInterrupt:
+        bridge.stop()

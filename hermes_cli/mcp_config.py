@@ -759,6 +759,10 @@ def mcp_command(args):
             port=getattr(args, "port", 9090),
             auth_token_file=getattr(args, "auth_token_file", None),
             allowed_hosts=getattr(args, "allowed_hosts", None) or None,
+            auth_mode=getattr(args, "auth_mode", "auto"),
+            oauth_signing_key_file=getattr(args, "oauth_signing_key_file", None),
+            oauth_state_file=getattr(args, "oauth_state_file", None),
+            oauth_public_origin=getattr(args, "oauth_public_origin", None),
         )
         return
 
