@@ -758,6 +758,7 @@ def mcp_command(args):
             host=getattr(args, "host", "127.0.0.1"),
             port=getattr(args, "port", 9090),
             auth_token_file=getattr(args, "auth_token_file", None),
+            allowed_hosts=getattr(args, "allowed_hosts", None) or None,
         )
         return
 
