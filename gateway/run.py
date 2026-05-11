@@ -7448,14 +7448,28 @@ class GatewayRunner:
         )
 
         try:
-            # Emit agent:start hook
+            # Emit agent:start hook. Handlers can mutate ``hook_ctx`` —
+            # if they set ``context_append`` to a non-empty string, it's
+            # appended to the per-turn system prompt before the model
+            # runs. This is the channel used by the jax-dispatch hook to
+            # surface pending agent_dispatch rows from reid-v7. Mutation
+            # is fire-and-forget (no return-value contract) so existing
+            # telemetry-style handlers stay unaffected.
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
+                "context_append": "",
             }
             await self.hooks.emit("agent:start", hook_ctx)
+            _hook_context_append = hook_ctx.get("context_append") or ""
+            if isinstance(_hook_context_append, str) and _hook_context_append.strip():
+                context_prompt = (
+                    context_prompt + "\n\n" + _hook_context_append.strip()
+                    if context_prompt
+                    else _hook_context_append.strip()
+                )
 
             # Run the agent
             agent_result = await self._run_agent(
