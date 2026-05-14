@@ -15,6 +15,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -680,6 +681,18 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _cron_job_summary(job: dict, max_words: int = 8) -> str:
+    """Return a compact human label for cron delivery wrappers."""
+    source = str(job.get("summary") or job.get("prompt") or job.get("name") or job.get("id") or "").strip()
+    if not source:
+        return ""
+    # Cron prompts often start with agent-role boilerplate that is wasted
+    # notification-preview space. Drop it before applying the word cap.
+    source = re.sub(r"^\s*You\s+are\s+Jax\s+running\s+", "", source, flags=re.IGNORECASE)
+    words = re.findall(r"[A-Za-z0-9]+(?:[-’'][A-Za-z0-9]+)?", source)
+    return " ".join(words[:max_words])
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -715,8 +728,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if wrap_response:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
+        job_summary = _cron_job_summary(job)
+        summary_line = f"Summary: {job_summary}\n" if job_summary else ""
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
+            f"{summary_line}"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
             f"{content}\n\n"

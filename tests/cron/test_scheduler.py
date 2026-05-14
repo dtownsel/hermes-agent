@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _cron_job_summary
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -515,6 +515,7 @@ class TestDeliverResultWrapping:
             job = {
                 "id": "test-job",
                 "name": "daily-report",
+                "prompt": "Daily report summarizing overnight service health and alerts.",
                 "deliver": "origin",
                 "origin": {"platform": "telegram", "chat_id": "123"},
             }
@@ -523,10 +524,33 @@ class TestDeliverResultWrapping:
         send_mock.assert_called_once()
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
         assert "Cronjob Response: daily-report" in sent_content
+        assert "Summary: Daily report summarizing overnight service health and alerts" in sent_content
         assert "(job_id: test-job)" in sent_content
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
+
+    def test_cron_job_summary_prefers_explicit_summary_and_caps_words(self):
+        """Cron wrapper summary should be compact and user-scannable."""
+        job = {
+            "id": "abc-123",
+            "name": "nightly-job",
+            "summary": "Nightly pipeline checks service health before digest delivery",
+            "prompt": "This much longer prompt should not be used for the summary.",
+        }
+
+        assert _cron_job_summary(job) == "Nightly pipeline checks service health before digest delivery"
+        assert len(_cron_job_summary(job).split()) == 8
+
+    def test_cron_job_summary_strips_jax_running_boilerplate(self):
+        """Cron summaries should not waste words on role boilerplate."""
+        job = {
+            "id": "career-delta-radar",
+            "prompt": "You are Jax running the DAILY CAREER DELTA RADAR for Dillon Townsel. Do not schedule more cron jobs.",
+        }
+
+        assert _cron_job_summary(job) == "the DAILY CAREER DELTA RADAR for Dillon Townsel"
+        assert "You are Jax running" not in _cron_job_summary(job)
 
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
