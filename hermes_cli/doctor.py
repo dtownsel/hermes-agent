@@ -248,8 +248,9 @@ def _build_apikey_providers_list() -> list:
     # Providers that already have a dedicated health check above the generic
     # API-key loop (with custom headers/auth). Skip their pluggable profiles
     # here so the generic Bearer-auth loop doesn't run a duplicate, broken
-    # check (e.g. Anthropic native API requires x-api-key, not Bearer).
-    _dedicated_canonical = {"anthropic", "openrouter", "bedrock"}
+    # check (e.g. Anthropic native API requires x-api-key, not Bearer;
+    # Gemini AI Studio requires `key=`/x-goog-api-key, not Bearer).
+    _dedicated_canonical = {"anthropic", "openrouter", "bedrock", "gemini"}
     _known_canonical.update(_dedicated_canonical)
     try:
         from providers import list_providers
@@ -1409,6 +1410,51 @@ def run_doctor(args):
                 [],
             )
 
+    def _probe_gemini() -> _ConnectivityResult:
+        key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if not key:
+            return _ConnectivityResult("Google Gemini API", [], [])
+        label = "Google Gemini API".ljust(20)
+        try:
+            import httpx
+            # Gemini API keys are accepted as a `key=` query parameter (or
+            # x-goog-api-key), not as OAuth-style Authorization: Bearer.
+            # The generic API-key provider probe intentionally uses Bearer
+            # auth for OpenAI-compatible /models endpoints, so Gemini needs a
+            # dedicated probe to avoid false "invalid API key" reports.
+            r = httpx.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"key": key, "pageSize": 1},
+                headers={"User-Agent": _HERMES_USER_AGENT},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                return _ConnectivityResult(
+                    "Google Gemini API",
+                    [(color("✓", Colors.GREEN), label, "")],
+                    [],
+                )
+            if r.status_code in (400, 401, 403):
+                return _ConnectivityResult(
+                    "Google Gemini API",
+                    [(color("✗", Colors.RED), label,
+                      color("(invalid API key)", Colors.DIM))],
+                    ["Check GOOGLE_API_KEY or GEMINI_API_KEY in .env"],
+                )
+            return _ConnectivityResult(
+                "Google Gemini API",
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"(HTTP {r.status_code})", Colors.DIM))],
+                [],
+            )
+        except Exception as e:
+            return _ConnectivityResult(
+                "Google Gemini API",
+                [(color("⚠", Colors.YELLOW), label,
+                  color(f"({e})", Colors.DIM))],
+                [],
+            )
+
     def _probe_apikey_provider(pname, env_vars, default_url, base_env,
                                supports_health_check) -> _ConnectivityResult:
         key = ""
@@ -1539,6 +1585,7 @@ def run_doctor(args):
     # Build the probe submission list in display order
     _probes.append(("OpenRouter API", _probe_openrouter))
     _probes.append(("Anthropic API", _probe_anthropic))
+    _probes.append(("Google Gemini API", _probe_gemini))
 
     global _APIKEY_PROVIDERS_CACHE
     if _APIKEY_PROVIDERS_CACHE is None:

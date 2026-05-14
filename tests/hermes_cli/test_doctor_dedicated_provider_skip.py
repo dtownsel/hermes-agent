@@ -36,6 +36,10 @@ def test_build_apikey_providers_list_skips_dedicated_check_providers():
         f"Bedrock uses AWS SDK creds, not Bearer auth; generic loop must skip. "
         f"Got: {sorted(names)}"
     )
+    assert not any("gemini" in name or "google" in name for name in names), (
+        f"Gemini AI Studio API keys use key=/x-goog-api-key, not Bearer auth; "
+        f"generic loop must skip it. Got: {sorted(names)}"
+    )
 
 
 def test_build_apikey_providers_list_includes_non_dedicated_providers():
