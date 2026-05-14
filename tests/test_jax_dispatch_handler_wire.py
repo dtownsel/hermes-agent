@@ -1,7 +1,14 @@
-"""End-to-end coverage for the jax-dispatch hook.
+"""Wire-format coverage for the jax-dispatch hook (mock-based, no real DB).
 
-This test exercises the real hook entry point against an in-process
-FastAPI app that behaves like Reid's internal dispatch poll endpoint.
+This test loads the real hook entry point but routes its HTTP client to
+an in-process FastAPI stub that mimics Reid's ``/internal/dispatch/poll``
+endpoint. It asserts the wire format the hook sends (path, method,
+headers, body) and the shape it returns (``{"context": ...}``) without
+touching Postgres or any external service.
+
+The full end-to-end test against a live Reid app + real Postgres lives
+at ``~/rhea/reid-v7/tests/test_jax_dispatch_e2e.py`` (marked
+``pytest.mark.integration``).
 """
 from __future__ import annotations
 
