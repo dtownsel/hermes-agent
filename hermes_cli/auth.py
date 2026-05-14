@@ -2406,8 +2406,9 @@ def _spotify_wait_for_callback(
     host, port, path = _spotify_validate_redirect_uri(redirect_uri)
     handler_cls, result = _make_spotify_callback_handler(path)
 
-    class _ReuseHTTPServer(HTTPServer):
+    class _ReuseHTTPServer(ThreadingHTTPServer):
         allow_reuse_address = True
+        daemon_threads = True
 
     try:
         server = _ReuseHTTPServer((host, port), handler_cls)
