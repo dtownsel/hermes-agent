@@ -1010,10 +1010,35 @@ class TestCliIntegration:
         monkeypatch.setattr("mcp_serve.run_mcp_server", mock_run)
 
         import argparse
-        args = argparse.Namespace(mcp_action="serve", verbose=True)
+        args = argparse.Namespace(
+            mcp_action="serve",
+            verbose=True,
+            transport="stdio",
+            host="127.0.0.1",
+            port=9090,
+            auth_token_file=None,
+            allowed_hosts=None,
+            auth_mode="auto",
+            oauth_signing_key_file=None,
+            oauth_state_file=None,
+            oauth_public_origin=None,
+            oauth_audience="hermes-mcp",
+        )
         from hermes_cli.mcp_config import mcp_command
         mcp_command(args)
-        mock_run.assert_called_once_with(verbose=True)
+        mock_run.assert_called_once_with(
+            verbose=True,
+            transport="stdio",
+            host="127.0.0.1",
+            port=9090,
+            auth_token_file=None,
+            allowed_hosts=None,
+            auth_mode="auto",
+            oauth_signing_key_file=None,
+            oauth_state_file=None,
+            oauth_public_origin=None,
+            oauth_audience="hermes-mcp",
+        )
 
 
 # ---------------------------------------------------------------------------
