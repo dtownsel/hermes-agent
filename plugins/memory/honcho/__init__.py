@@ -23,10 +23,32 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
-from agent.memory_provider import TRIVIAL_PROMPT_RE, MemoryProvider, is_trivial_prompt
+from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
+
+
+# Gateway-internal notifications can arrive through the same user-role channel
+# as genuine user messages. They are execution metadata, not conversation, and
+# must never become durable personal memory. Keep this deliberately anchored:
+# a human discussing one of these strings mid-message is still valid input.
+_INTERNAL_GATEWAY_TURN_RE = re.compile(
+    r"^\s*(?:"
+    r"\[ASYNC (?:BATCH|DELEGATION) COMPLETE\]|"
+    r"\[CONTEXT COMPACTION(?:\s*[—-]\s*REFERENCE ONLY)?\]|"
+    r"\[PRIOR CONTEXT(?:\s*[—-]\s*FOR REFERENCE ONLY)?\]|"
+    r"\[Your active task list was preserved across context compression\]|"
+    r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
+    r"A background (?:process|subagent|delegation) .* (?:has )?(?:finished|completed)\."
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_internal_gateway_turn(text: str) -> bool:
+    """Return True for machine-generated gateway/delegation notifications."""
+    return bool(_INTERNAL_GATEWAY_TURN_RE.match(text or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -1267,17 +1289,19 @@ class HonchoMemoryProvider(MemoryProvider):
                 return r
         return ""
 
-    # Prompts that carry no semantic signal — trivial acknowledgements, greetings,
-    # slash commands, empty input. Skipping injection here saves tokens and prevents
-    # stale user-model context from derailing one-word replies. Classification is
-    # fully delegated to the shared agent/memory_provider.is_trivial_prompt so the
-    # provider-side classifier and the core prefetch gate can never drift apart.
-    _TRIVIAL_PROMPT_RE = TRIVIAL_PROMPT_RE
+    # Prompts that carry no semantic signal — trivial acknowledgements, slash
+    # commands, empty input. Skipping injection here saves tokens and prevents
+    # stale user-model context from derailing one-word replies.
+    _TRIVIAL_PROMPT_RE = re.compile(
+        r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
+        r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)$',
+        re.IGNORECASE,
+    )
 
     @classmethod
     def _is_trivial_prompt(cls, text: str) -> bool:
         """Return True if the prompt is too trivial to warrant context injection."""
-        return is_trivial_prompt(text)
+        return bool(cls._TRIVIAL_PROMPT_RE.match((text or "").strip()))
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""
@@ -1393,6 +1417,14 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return
+        # ``saveMessages`` is the operator's hard write gate. Previously it
+        # was parsed into HonchoClientConfig but never enforced here, so a
+        # cached hybrid provider kept writing even after containment was set.
+        if self._config and not getattr(self._config, "save_messages", True):
+            return
+        if _is_internal_gateway_turn(user_content):
+            logger.debug("Honcho sync skipped machine-generated gateway turn")
+            return
         if self._recall_mode == "tools" and not self._session_ready():
             return
         if not self._session_ready():
@@ -1402,6 +1434,8 @@ class HonchoMemoryProvider(MemoryProvider):
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        if not clean_user_content or not clean_assistant_content:
+            return
 
         def _sync():
             try:
