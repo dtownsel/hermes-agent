@@ -881,6 +881,79 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_ollama_cloud_account_usage(
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch Ollama Cloud usage from ``/api/usage``.
+
+    Ollama Cloud exposes session + weekly rate-limit windows and per-model
+    request counts at ``https://ollama.com/api/usage`` (outside the
+    OpenAI-compatible ``/v1`` surface). Credentials resolve through the same
+    runtime path as inference (``OLLAMA_API_KEY``), so /usage works whether
+    ollama-cloud is the active provider or just a fallback.
+    """
+    runtime = resolve_runtime_provider(
+        requested="ollama-cloud",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    normalized = str(runtime.get("base_url", "") or "").rstrip("/")
+    # /api/usage lives at the site root, not under the /v1 OpenAI surface.
+    usage_url = normalized
+    if usage_url.endswith("/v1"):
+        usage_url = usage_url[: -len("/v1")]
+    usage_url = f"{usage_url}/api/usage"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(usage_url, headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    limits = payload.get("limits") or {}
+    windows: list[AccountUsageWindow] = []
+    for key, label in (("session", "Session"), ("weekly", "Weekly")):
+        window = limits.get(key) or {}
+        used = window.get("usage")
+        if not isinstance(used, (int, float)):
+            continue
+        # Ollama reports a fraction (0.082 = 8.2%); the renderer expects
+        # percent units, matching the Codex payload shape.
+        windows.append(
+            AccountUsageWindow(
+                label=label,
+                used_percent=float(used) * 100.0,
+            )
+        )
+    details: list[str] = []
+    activity = payload.get("activity") or {}
+    cost = activity.get("cost")
+    if isinstance(cost, (int, float)) and float(cost) > 0:
+        details.append(f"Cost this period: ${float(cost):,.2f}")
+    weekly_models = (limits.get("weekly") or {}).get("models") or []
+    if weekly_models:
+        counts = [
+            f"{m.get('name', '?')} {int(m.get('request_count', 0))}"
+            for m in weekly_models
+            if isinstance(m, dict) and m.get("name")
+        ]
+        if counts:
+            details.append("Weekly requests: " + " · ".join(counts))
+    return AccountUsageSnapshot(
+        provider="ollama-cloud",
+        source="usage_api",
+        fetched_at=_utc_now(),
+        title="Ollama Cloud limits",
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -893,6 +966,8 @@ def fetch_account_usage(
     try:
         if normalized == "openai-codex":
             return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
+        if normalized == "ollama-cloud":
+            return _fetch_ollama_cloud_account_usage(base_url=base_url, api_key=api_key)
         if normalized == "anthropic":
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":

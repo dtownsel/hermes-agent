@@ -284,6 +284,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/research/research-arxiv',
                     'user-guide/skills/bundled/research/research-blogwatcher',
+                    'user-guide/skills/bundled/research/research-competitor-news-monitor',
                     'user-guide/skills/bundled/research/research-grounded-citations',
                     'user-guide/skills/bundled/research/research-llm-wiki',
                     'user-guide/skills/bundled/research/research-research-paper-writing',
@@ -403,9 +404,10 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-devops',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/optional/devops/devops-cli',
+                    'user-guide/skills/optional/devops/devops-actual-setup',
                     'user-guide/skills/optional/devops/devops-docker-management',
                     'user-guide/skills/optional/devops/devops-hermes-s6-container-supervision',
+                    'user-guide/skills/optional/devops/devops-inference-sh-cli',
                     'user-guide/skills/optional/devops/devops-pinggy-tunnel',
                     'user-guide/skills/optional/devops/devops-watchers',
                   ],
